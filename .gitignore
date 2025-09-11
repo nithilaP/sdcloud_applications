@@ -1,0 +1,32 @@
+# Build output
+/build/
+CMakeFiles/
+CMakeCache.txt
+cmake.check_cache
+CMakeConfigureLog.yaml
+
+# ESP-IDF auto-generated files
+/sdkconfig
+/sdkconfig.old
+/sdkconfig.ci
+/sdkconfig.*.old
+/config/
+
+# Local environment
+config.env
+
+# VS Code settings (keep if you want team-wide configs)
+.vscode/
+
+# Python virtual environments
+.venv/
+env/
+venv/
+/__pycache__/
+
+# Logs
+*.log
+
+# macOS junk
+.DS_Store
+
