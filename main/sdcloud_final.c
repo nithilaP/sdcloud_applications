@@ -1,7 +1,10 @@
 #include <stdio.h>
 #include "spiffs.h"
+#include "heartbeat.h"
 #include "esp_log.h"
 #include <string.h>
+#include <sys/stat.h>
+#include "driver/gpio.h"
 
 // Name of the file on the SD card you want to move
 #define SD_INPUT_FILE  "/sd/Lucas_Sample_Data.csv"
@@ -9,48 +12,42 @@
 // Name to use on SPIFFS after moving
 #define SPIFFS_OUTPUT_FILE  "/spiffs/sensor_data.csv"
 
+static bool file_exists(const char *path) {
+    struct stat st;
+    return (stat(path, &st) == 0) && S_ISREG(st.st_mode);
+}
 
 void app_main(void) {
-    // Mount SPIFFS at /spiffs
+    // Mount SPIFFS
     ESP_ERROR_CHECK(spiffs_init("/spiffs", 8, true));
     spiffs_list_dir("/spiffs");
 
-    // Write and read a quick test file
-    const char *hello = "hello from spiffs\n";
-    ESP_ERROR_CHECK(spiffs_write_file("/spiffs/test.txt", hello, strlen(hello), true));
-
-    char *buf = NULL; size_t len = 0;
-    ESP_ERROR_CHECK(spiffs_read_file("/spiffs/test.txt", &buf, &len));
-    ESP_LOGI("APP", "SPIFFS read (%u bytes): %s", (unsigned)len, buf);
-    free(buf);
-
-    // SD test: mount /sd, list, copy /sd/input.bin to /spiffs/input.bin and delete original
-    esp_err_t r = sd_to_spiffs_move("/sd", SD_INPUT_FILE,
-                                "/spiffs", SPIFFS_OUTPUT_FILE,
-                                true, true);
-
-    spiffs_list_dir("/spiffs");
-
-    if (r != ESP_OK) {
-        ESP_LOGE("APP", "SD->SPIFFS copy failed: %s", esp_err_to_name(r));
-        // you can choose to return, continue, or handle differently
+    // OPTIONAL: seed CSV once from SD if missing (you already had this)
+    if (!file_exists(SPIFFS_OUTPUT_FILE)) {
+        esp_err_t r = sdcard_init("/sd");
+        if (r == ESP_OK) {
+            r = sd_to_spiffs_move("/sd", SD_INPUT_FILE,
+                                  "/spiffs", SPIFFS_OUTPUT_FILE,
+                                  true, false);
+            sdcard_deinit("/sd");
+            if (r != ESP_OK) ESP_LOGW("APP", "Seed failed: %s", esp_err_to_name(r));
+        }
     }
 
+    // Ensure the CSV exists (create empty if still missing)
+    if (!file_exists(SPIFFS_OUTPUT_FILE)) {
+        const char *hdr = ""; // or put a header line if you like
+        (void)spiffs_write_file(SPIFFS_OUTPUT_FILE, hdr, strlen(hdr), true);
+    }
 
-    // Done
-    // sdcard_deinit("/sd");       // if you want to unmount SD
-    // spiffs_deinit("/spiffs");   // if you want to unmount SPIFFS
+    // Start HEARTBEAT: read SPIFFS file every 1000 ms, pulse GPIO2 on growth
+    ESP_ERROR_CHECK(heartbeat_start(SPIFFS_OUTPUT_FILE, GPIO_NUM_2, 1000));
 
+    // Start TEST WRITER: append a line every 5s so you can see the heartbeat pulse
+    ESP_ERROR_CHECK(test_writer_start(SPIFFS_OUTPUT_FILE, 5000, "Test entry."));
+
+    // You can adjust the heartbeat period later if needed:
+    // heartbeat_set_period_ms(1500);
+
+    spiffs_list_dir("/spiffs");
 }
-
-
-/* Verify partitions after mounting. */
-/* 
-size_t total = 0, used = 0;       
-esp_err_t ret = esp_spiffs_info(NULL, &total, &used); // NULL = default "spiffs" label
-if (ret == ESP_OK) {
-    ESP_LOGI("SPIFFS", "total=%u used=%u free=%u", (unsigned)total, (unsigned)used, (unsigned)(total - used));
-} else {
-    ESP_LOGE("SPIFFS", "esp_spiffs_info failed: %s", esp_err_to_name(ret));
-}
-*/
