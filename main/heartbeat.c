@@ -24,10 +24,11 @@ static int line_count(const char *file_path) {
         ESP_LOGW("HEARTBEAT", "Could not take lock to read %s", file_path);
         return -1;
     }
-    ESP_LOGW(TAG, "Acquired lock.");
+    ESP_LOGW(TAG, "Acquired lock. -> Line Count");
     FILE *f = fopen(file_path, "r");
     if (!f) {
         ESP_LOGE(TAG, "open failed: %s", file_path);
+        xSemaphoreGive(spi_flash_lock);
         return -1;
     }
     int n = 0;
@@ -79,11 +80,12 @@ static void append_line(const char *path, const char *text) {
         ESP_LOGW("HEARTBEAT", "Could not take lock to read %s", path);
         return;
     }
-    ESP_LOGW(TAG, "Acquired lock.");
+    ESP_LOGW(TAG, "Acquired lock. -> Append Line.");
 
     FILE *f = fopen(path, "a");
     if (!f) {
         ESP_LOGE(TAG, "append open failed: %s", path);
+        xSemaphoreGive(spi_flash_lock);
         return;
     }
     unsigned long ts = (unsigned long)esp_log_timestamp();
