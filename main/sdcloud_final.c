@@ -1,14 +1,15 @@
-#include <stdio.h>
 #include "spiffs.h"
 #include "heartbeat.h"
 #include "compression.h"
+#include "global.h"
+
 #include "esp_log.h"
+#include "driver/gpio.h"
 #include <string.h>
 #include <sys/stat.h>
-#include "driver/gpio.h"
-#include "global.h"
 #include <stdio.h>
 
+/* Global Lock for Synchronizing access to SPI Flash.*/
 SemaphoreHandle_t spi_flash_lock = NULL;
 
 // Name of the file on the SD card you want to move

@@ -3,5 +3,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
-// Declare the global lock (not define)
+/* 
+* Global Semaphore used to synchronizing access to SPI Flash.
+*/
 extern SemaphoreHandle_t spi_flash_lock;
