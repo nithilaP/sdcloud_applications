@@ -2,26 +2,29 @@
 #include "esp_err.h"
 #include "driver/gpio.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-/** Start heartbeat task: poll `csv_path` every `period_ms`, pulse `pin` if line-count increases. */
+/*
+* Start Heartbeat Task. 
+* Reads sensing file periodically to see if new lines were added (indicating increase in data).
+*/
 esp_err_t heartbeat_start(const char *csv_path, gpio_num_t pin, int period_ms);
 
-/** Change the heartbeat period at runtime (ms). */
+/*
+* Start Heartbeat Task. 
+* Sets the frequency at which the task checks the sensing csv for new data. 
+*/
 void heartbeat_set_period_ms(int period_ms);
 
-/** Stop the heartbeat task (safe to call if not running). */
+/*
+* Stops Heartbeat Task. 
+*/
 void heartbeat_stop(void);
 
-/** Start a test-writer that appends a line to `csv_path` every `interval_ms`.
- *  If `line_text` is NULL, uses "Test entry." */
+/*
+* Testing: Starts the task that adds a new line to the csv to mimic data written to the file in the real world.
+*/
 esp_err_t test_writer_start(const char *csv_path, int interval_ms, const char *line_text);
 
-/** Stop the test-writer task (safe to call if not running). */
+/*
+* Testing: Stops data appending task.
+*/
 void test_writer_stop(void);
-
-#ifdef __cplusplus
-}
-#endif
