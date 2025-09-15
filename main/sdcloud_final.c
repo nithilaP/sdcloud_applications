@@ -139,7 +139,7 @@ static void parse_config_commands(const char *path,
 void app_main(void) {
     // Mount SPIFFS
     ESP_ERROR_CHECK(spiffs_init("/spiffs", 8, true));
-    spiffs_list_dir("/spiffs");
+    spiffs_list_file_sys("/spiffs");
 
     // Create global lock
     spi_flash_lock = xSemaphoreCreateMutex();
@@ -155,12 +155,12 @@ void app_main(void) {
             r = sd_to_spiffs_move("/sd", SD_INPUT_FILE,
                                   "/spiffs", SPIFFS_OUTPUT_FILE,
                                   true, false);
-            // sdcard_deinit("/sd");
+            // sdcard_breakdown("/sd");
             if (r != ESP_OK) ESP_LOGW("APP", "Seed failed: %s", esp_err_to_name(r));
         }
     // }
 
-    sdcard_list_dir("/sd");
+    sdcard_list_file_sys("/sd");
 
     // Ensure the CSV exists (create empty if still missing)
     if (!file_exists(SPIFFS_OUTPUT_FILE)) {
@@ -189,5 +189,5 @@ void app_main(void) {
     //                                   30000,
     //                                   "rle"));
 
-    spiffs_list_dir("/spiffs");
+    spiffs_list_file_sys("/spiffs");
 }

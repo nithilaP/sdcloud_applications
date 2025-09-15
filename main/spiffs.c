@@ -7,72 +7,64 @@
 #include <sys/types.h>
 #include <errno.h>
 #include <stdlib.h>
-
 #include "esp_log.h"
 #include "esp_vfs.h"
 #include "esp_spiffs.h"
 #include "esp_vfs_fat.h"
+#include "sdmmc_cmd.h"
 #include "driver/spi_common.h"
 #include "driver/sdspi_host.h"
-#include "sdmmc_cmd.h"
 #include "driver/gpio.h"
 
 
 static const char *TAG = "fs_utils";
 
-// ====== Config: SDSPI pins for ESP32-WROOM DevKit (adjust as needed) ======
-// VSPI defaults: SCLK=18, MISO=19, MOSI=23, CS=5
+/* SDSPI pins Definitions (VSPI Defaults) */
 #ifndef SDCARD_SPI_HOST
-#define SDCARD_SPI_HOST     SPI3_HOST     // VSPI
+#define SDCARD_SPI_HOST SPI3_HOST
 #endif
 #ifndef SDCARD_PIN_MOSI
-#define SDCARD_PIN_MOSI     23
+#define SDCARD_PIN_MOSI 23
 #endif
 #ifndef SDCARD_PIN_MISO
-#define SDCARD_PIN_MISO     19
+#define SDCARD_PIN_MISO 19
 #endif
 #ifndef SDCARD_PIN_SCLK
-#define SDCARD_PIN_SCLK     18
+#define SDCARD_PIN_SCLK 18
 #endif
 #ifndef SDCARD_PIN_CS
-#define SDCARD_PIN_CS       5
+#define SDCARD_PIN_CS 5
 #endif
 
-// Safe pull-ups for SD lines (CS/MOSI/MISO), CLK as output w/ no pulls
-static void sdcard_configure_safe_gpio(void)
+/* SD Line Config (Pullups, etc)*/
+static void sdcard_config(void)
 {
-    gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << SDCARD_PIN_CS) |
-                        (1ULL << SDCARD_PIN_MOSI) |
-                        (1ULL << SDCARD_PIN_MISO),
+    gpio_config_t io_config = {
+        .pin_bit_mask = (1ULL << SDCARD_PIN_CS) | (1ULL << SDCARD_PIN_MOSI) | (1ULL << SDCARD_PIN_MISO),
         .mode = GPIO_MODE_INPUT_OUTPUT,
-        .pull_up_en = 1,
-        .pull_down_en = 0,
-        .intr_type = GPIO_INTR_DISABLE
+        .pull_up_en = 1
     };
-    gpio_config(&io_conf);
+    gpio_config(&io_config);
 
     gpio_set_direction(SDCARD_PIN_SCLK, GPIO_MODE_OUTPUT);
     gpio_pullup_dis(SDCARD_PIN_SCLK);
     gpio_pulldown_dis(SDCARD_PIN_SCLK);
-
-    // Idle CS high
     gpio_set_level(SDCARD_PIN_CS, 1);
 }
 
-// ====== SPIFFS ======
+/* SPIFFS Set up & Break Down */
 esp_err_t spiffs_init(const char *base_path, size_t max_files, bool format_if_mount_failed)
 {
     esp_vfs_spiffs_conf_t conf = {
         .base_path = base_path,
-        .partition_label = NULL, // use default "storage" partition of type "data,spiffs"
+        .partition_label = NULL,
         .max_files = (int)max_files,
         .format_if_mount_failed = format_if_mount_failed
     };
 
     esp_err_t ret = esp_vfs_spiffs_register(&conf);
     if (ret == ESP_ERR_NOT_FOUND) {
-        ESP_LOGE(TAG, "SPIFFS partition not found. Check partitions.csv (type=data, subtype=spiffs).");
+        ESP_LOGE(TAG, "NO SPIFFS partition found.");
         return ret;
     } else if (ret != ESP_OK) {
         ESP_LOGE(TAG, "SPIFFS mount failed: %s", esp_err_to_name(ret));
@@ -89,47 +81,43 @@ esp_err_t spiffs_init(const char *base_path, size_t max_files, bool format_if_mo
     return ESP_OK;
 }
 
-void spiffs_deinit(const char *base_path)
+void spiffs_breakdown()
 {
-    (void)base_path; // base_path not required to unregister
     esp_vfs_spiffs_unregister(NULL);
-    ESP_LOGI(TAG, "SPIFFS unmounted");
+    ESP_LOGI(TAG, "SPIFFS broken down.");
 }
 
-static esp_err_t list_dir_generic(const char *dir_path)
+/* Basic File System Commands*/
+
+static esp_err_t list_file_sys(const char *path)
 {
-    DIR *dir = opendir(dir_path);
+    DIR *dir = opendir(path);
     if (!dir) {
-        ESP_LOGE(TAG, "opendir(%s) failed: errno=%d", dir_path, errno);
+        ESP_LOGE(TAG, "opendir(%s) failed: errno=%d", path, errno);
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "Listing: %s", dir_path);
+    ESP_LOGI(TAG, "Listing: %s", path);
     struct dirent *ent;
     while ((ent = readdir(dir)) != NULL) {
-       char fullpath[512];  // was 256
-        snprintf(fullpath, sizeof(fullpath), "%s/%s", dir_path, ent->d_name);
+       char fullpath[512];
+        snprintf(fullpath, sizeof(fullpath), "%s/%s", path, ent->d_name);
 
         struct stat st;
         if (stat(fullpath, &st) == 0) {
             if (S_ISDIR(st.st_mode)) {
-                ESP_LOGI(TAG, "  <DIR> %s", ent->d_name);
+                ESP_LOGI(TAG, "<DIR> %s", ent->d_name);
             } else {
-                ESP_LOGI(TAG, "  %8ld  %s", (long)st.st_size, ent->d_name);
+                ESP_LOGI(TAG, "%8ld %s", (long)st.st_size, ent->d_name);
             }
         } else {
-            ESP_LOGI(TAG, "  ?        %s", ent->d_name);
+            ESP_LOGI(TAG, " ? %s", ent->d_name);
         }
     }
     closedir(dir);
     return ESP_OK;
 }
 
-esp_err_t spiffs_list_dir(const char *dir_path)
-{
-    return list_dir_generic(dir_path);
-}
-
-static esp_err_t read_file_generic(const char *path, char **out_buf, size_t *out_len)
+static esp_err_t read_file(const char *path, char **out_buf, size_t *out_len)
 {
     FILE *f = fopen(path, "rb");
     if (!f) {
@@ -164,26 +152,33 @@ static esp_err_t read_file_generic(const char *path, char **out_buf, size_t *out
     return ESP_OK;
 }
 
-esp_err_t spiffs_read_file(const char *path, char **out_buf, size_t *out_len)
-{
-    return read_file_generic(path, out_buf, out_len);
-}
-
 static bool file_exists(const char *path)
 {
     struct stat st;
     return (stat(path, &st) == 0) && S_ISREG(st.st_mode);
 }
 
+/* SPIFFS File Manipulation. */
+
+esp_err_t spiffs_list_file_sys(const char *path)
+{
+    return list_file_sys(path);
+}
+
+esp_err_t spiffs_read_file(const char *path, char **out_buf, size_t *out_len)
+{
+    return read_file(path, out_buf, out_len);
+}
+
 esp_err_t spiffs_write_file(const char *path, const void *data, size_t len, bool overwrite)
 {
     if (!overwrite && file_exists(path)) {
-        ESP_LOGE(TAG, "File exists and overwrite=false: %s", path);
+        ESP_LOGE(TAG, "File exists and overwrite not enabled: %s", path);
         return ESP_ERR_INVALID_STATE;
     }
     FILE *f = fopen(path, "wb");
     if (!f) {
-        ESP_LOGE(TAG, "fopen(%s) for write failed: errno=%d", path, errno);
+        ESP_LOGE(TAG, "fopen(%s) for write failed: error=%d", path, errno);
         return ESP_FAIL;
     }
     size_t wr = fwrite(data, 1, len, f);
@@ -196,39 +191,33 @@ esp_err_t spiffs_write_file(const char *path, const void *data, size_t len, bool
     return ESP_OK;
 }
 
-// ====== SD (SDSPI) ======
-static sdmmc_card_t *s_card = NULL;
-static char s_mount_point[16] = {0};  // remember the mount path (e.g., "/sd")
+/* SD Card Functions.*/
+static sdmmc_card_t *sd_card = NULL;
+static char sd_mount_loc[16] = {0};
 
 esp_err_t sdcard_init(const char *base_path)
 {
-    if (s_card) {
-        if (s_mount_point[0] != '\0' && strcmp(s_mount_point, base_path) != 0) {
-            ESP_LOGW(TAG, "SD already mounted at %s (requested %s)", s_mount_point, base_path);
+    if (sd_card) {
+        if (sd_mount_loc[0] != '\0' && strcmp(sd_mount_loc, base_path) != 0) {
+            ESP_LOGW(TAG, "SD already mounted at %s (requested %s)", sd_mount_loc, base_path);
         } else {
             ESP_LOGW(TAG, "SD already mounted");
         }
         return ESP_OK;
     }
 
-    // Configure safe GPIO levels (pull-ups, CS high)
-    sdcard_configure_safe_gpio();
-
-    // FATFS mount config
+    sdcard_config();
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
         .max_files = 5,
         .allocation_unit_size = 16 * 1024
     };
 
-    // SDSPI host (VSPI by default)
-    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT(); // define host
     host.slot = SDCARD_SPI_HOST;
+    host.max_freq_khz = 400;  // starting freq. 
+    /* Note to Nithila: Can Increase Hz Later. */
 
-    // Start slow to avoid init timeouts; you can raise later
-    host.max_freq_khz = 400;  // 400 kHz
-
-    // SPI bus config
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = SDCARD_PIN_MOSI,
         .miso_io_num = SDCARD_PIN_MISO,
@@ -238,70 +227,57 @@ esp_err_t sdcard_init(const char *base_path)
         .max_transfer_sz = 4096,
         .flags = SPICOMMON_BUSFLAG_MASTER
     };
-
     esp_err_t err = spi_bus_initialize(host.slot, &bus_cfg, SPI_DMA_CH_AUTO);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "spi_bus_initialize failed: %s", esp_err_to_name(err));
         return err;
     }
 
-    // SDSPI device (chip select)
     sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
     slot_config.gpio_cs = SDCARD_PIN_CS;
     slot_config.host_id = host.slot;
 
-    // Mount
-    esp_err_t ret = esp_vfs_fat_sdspi_mount(base_path, &host, &slot_config, &mount_config, &s_card);
+    /* Mounting. */
+    esp_err_t ret = esp_vfs_fat_sdspi_mount(base_path, &host, &slot_config, &mount_config, &sd_card);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to mount SD card FATFS at %s: %s", base_path, esp_err_to_name(ret));
-        spi_bus_free(host.slot);  // cleanup so we can retry later
+        spi_bus_free(host.slot);
         return ret;
     }
 
-    // Remember mount point for safe unmount
-    strncpy(s_mount_point, base_path, sizeof(s_mount_point) - 1);
-    s_mount_point[sizeof(s_mount_point) - 1] = '\0';
+    /* Using mount loc for unmounting safely. */
+    strncpy(sd_mount_loc, base_path, sizeof(sd_mount_loc) - 1);
+    sd_mount_loc[sizeof(sd_mount_loc) - 1] = '\0';
 
-    sdmmc_card_print_info(stdout, s_card);
-    ESP_LOGI(TAG, "SD mounted at %s", s_mount_point);
+    sdmmc_card_print_info(stdout, sd_card);
+    ESP_LOGI(TAG, "SD mounted at %s", sd_mount_loc);
     return ESP_OK;
 }
 
-void sdcard_deinit(const char *base_path)
+void sdcard_breakdown(const char *base_path)
 {
     (void)base_path;
-    if (s_card) {
-        const char *mp = (s_mount_point[0] != '\0') ? s_mount_point : "/sd";
-        esp_vfs_fat_sdcard_unmount(mp, s_card);  // must pass mount path (not NULL)
-        s_card = NULL;
-        s_mount_point[0] = '\0';
+    if (sd_card) {
+        const char *mp = (sd_mount_loc[0] != '\0') ? sd_mount_loc : "/sd";
+        esp_vfs_fat_sdcard_unmount(mp, sd_card);  // must pass mount path (not NULL)
+        sd_card = NULL;
+        sd_mount_loc[0] = '\0';
         spi_bus_free(SDCARD_SPI_HOST);
         ESP_LOGI(TAG, "SD unmounted");
     }
 }
 
-esp_err_t sdcard_list_dir(const char *dir_path)
+esp_err_t sdcard_list_file_sys(const char *dir_path)
 {
-    return list_dir_generic(dir_path);
+    return list_file_sys(dir_path);
 }
 
 esp_err_t sdcard_read_file(const char *path, char **out_buf, size_t *out_len)
 {
-    return read_file_generic(path, out_buf, out_len);
+    return read_file(path, out_buf, out_len);
 }
 
-// ====== Cross: SD -> SPIFFS ======
-esp_err_t spiffs_copy_from_sd(const char *sd_path, const char *spiffs_path, bool overwrite)
-{
-    char *buf = NULL;
-    size_t len = 0;
-    esp_err_t ret = sdcard_read_file(sd_path, &buf, &len);
-    if (ret != ESP_OK) return ret;
-
-    ret = spiffs_write_file(spiffs_path, buf, len, overwrite);
-    free(buf);
-    return ret;
-}
+/* Testing with SDCard & SPIFFS */
 
 esp_err_t sd_to_spiffs_move(const char *sd_base,
                             const char *sd_in_path,
@@ -313,7 +289,7 @@ esp_err_t sd_to_spiffs_move(const char *sd_base,
     (void)sd_base;
     (void)spiffs_base;
 
-    // 0) quick ignore of macOS resource-fork files
+    /* Online resources set up.*/
     const char *base = strrchr(sd_in_path, '/');
     base = base ? base + 1 : sd_in_path;
     if (strncmp(base, "._", 2) == 0) {
@@ -321,60 +297,61 @@ esp_err_t sd_to_spiffs_move(const char *sd_base,
         return ESP_ERR_INVALID_ARG;
     }
 
-    // 1) Ensure SD is mounted (no-op if already)
+    /* Mount SD Card.*/
     esp_err_t ret = sdcard_init("/sd");
     if (ret != ESP_OK) return ret;
 
-    // 2) Stat source file, get size
+    /* Get SD File. */
     struct stat src_st = {0};
     if (stat(sd_in_path, &src_st) != 0 || !S_ISREG(src_st.st_mode)) {
         ESP_LOGE(TAG, "Failed to stat SD file: %s (errno=%d)", sd_in_path, errno);
         return ESP_FAIL;
     }
 
-    // 3) Mount SPIFFS if needed
-    // Try to open dest for append to probe VFS; if fails, attempt mount.
-    FILE *probe = fopen(spiffs_out_path, "ab");
-    if (!probe) {
+    /* Mount SPIFFS.*/
+    FILE *mounting = fopen(spiffs_out_path, "ab");
+    if (!mounting) {
         ret = spiffs_init("/spiffs", 8, false);
         if (ret != ESP_OK) return ret;
     } else {
-        fclose(probe);
+        fclose(mounting);
     }
 
-    // 4) Check SPIFFS free space
+    /* Memcheck for SPIFFS. */
     size_t total = 0, used = 0;
     ret = esp_spiffs_info(NULL, &total, &used);
     if (ret == ESP_OK) {
-        size_t free_bytes = (used <= total) ? (total - used) : 0;
+        size_t free_bytes = 0;
+        if (used <= total){
+            free_bytes = total - used;
+        }
         if (src_st.st_size > (ssize_t)free_bytes) {
             ESP_LOGE(TAG, "Not enough SPIFFS space: need %ld, have %u bytes",
                      (long)src_st.st_size, (unsigned)free_bytes);
             return ESP_ERR_NO_MEM;
         }
     } else {
-        ESP_LOGW(TAG, "esp_spiffs_info failed (%s); skipping capacity pre-check",
-                 esp_err_to_name(ret));
+        ESP_LOGW(TAG, "esp_spiffs_info failed (%s); skipping capacity pre-check", esp_err_to_name(ret));
     }
 
-    // 5) If overwrite=false and dest exists, bail
+    /* Edge Case: File Exists & No Overwrite Requested. */
     if (!overwrite) {
         struct stat dst_st;
         if (stat(spiffs_out_path, &dst_st) == 0 && S_ISREG(dst_st.st_mode)) {
-            ESP_LOGE(TAG, "Dest exists and overwrite=false: %s", spiffs_out_path);
+            ESP_LOGE(TAG, "Dest exists and no overwrite requested: %s", spiffs_out_path);
             return ESP_ERR_INVALID_STATE;
         }
     }
 
-    // 6) Stream copy in chunks (no big malloc)
+    /* Problem with Malloc. Solution: Stream data chunks. */
     FILE *fin = fopen(sd_in_path, "rb");
     if (!fin) {
-        ESP_LOGE(TAG, "fopen(%s) failed: errno=%d", sd_in_path, errno);
+        ESP_LOGE(TAG, "fopen(%s) failed: error=%d", sd_in_path, errno);
         return ESP_FAIL;
     }
     FILE *fout = fopen(spiffs_out_path, "wb");
     if (!fout) {
-        ESP_LOGE(TAG, "fopen(%s) for write failed: errno=%d", spiffs_out_path, errno);
+        ESP_LOGE(TAG, "fopen(%s) for write failed: error=%d", spiffs_out_path, errno);
         fclose(fin);
         return ESP_FAIL;
     }
@@ -390,11 +367,15 @@ esp_err_t sd_to_spiffs_move(const char *sd_base,
     size_t total_written = 0;
     for (;;) {
         size_t rd = fread(buf, 1, 4096, fin);
-        if (rd == 0) break;
+        if (rd == 0){
+            break;
+        }
         size_t wr = fwrite(buf, 1, rd, fout);
         if (wr != rd) {
             ESP_LOGE(TAG, "Short write to %s (wrote %zu of %zu)", spiffs_out_path, wr, rd);
-            free(buf); fclose(fin); fclose(fout);
+            free(buf); 
+            fclose(fin); 
+            fclose(fout);
             return ESP_FAIL;
         }
         total_written += wr;
@@ -406,11 +387,10 @@ esp_err_t sd_to_spiffs_move(const char *sd_base,
     ESP_LOGI(TAG, "Stream-copied %u bytes: %s -> %s",
              (unsigned)total_written, sd_in_path, spiffs_out_path);
 
-    // 7) Move semantics (optional delete from SD)
+    /* Delete file from SD if so.*/
     if (move) {
         if (remove(sd_in_path) != 0) {
-            ESP_LOGW(TAG, "remove(%s) failed: errno=%d (copied but not removed)",
-                     sd_in_path, errno);
+            ESP_LOGW(TAG, "remove(%s) failed: errno=%d (copied but not removed)", sd_in_path, errno);
         } else {
             ESP_LOGI(TAG, "Moved: %s -> %s", sd_in_path, spiffs_out_path);
         }
