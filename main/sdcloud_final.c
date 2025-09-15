@@ -5,6 +5,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include "driver/gpio.h"
+#include "global.h"
+
+SemaphoreHandle_t spi_flash_lock = NULL;
 
 // Name of the file on the SD card you want to move
 #define SD_INPUT_FILE  "/sd/Lucas_Sample_Data.csv"
@@ -21,6 +24,13 @@ void app_main(void) {
     // Mount SPIFFS
     ESP_ERROR_CHECK(spiffs_init("/spiffs", 8, true));
     spiffs_list_dir("/spiffs");
+
+    // Create global lock
+    spi_flash_lock = xSemaphoreCreateMutex();
+    if (spi_flash_lock == NULL) {
+        ESP_LOGE("APP", "Failed to create SPI flash lock");
+        return;
+    }
 
     // OPTIONAL: seed CSV once from SD if missing (you already had this)
     if (!file_exists(SPIFFS_OUTPUT_FILE)) {

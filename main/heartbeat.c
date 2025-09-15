@@ -8,6 +8,7 @@
 #include "freertos/task.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "global.h"
 
 static const char *TAG = "heartbeat";
 
@@ -19,6 +20,11 @@ static int          s_period_ms   = 1000;     // default heartbeat period
 
 // ---- helpers ----
 static int line_count(const char *file_path) {
+    if (xSemaphoreTake(spi_flash_lock, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        ESP_LOGW("HEARTBEAT", "Could not take lock to read %s", file_path);
+        return -1;
+    }
+    ESP_LOGW(TAG, "Acquired lock.");
     FILE *f = fopen(file_path, "r");
     if (!f) {
         ESP_LOGE(TAG, "open failed: %s", file_path);
@@ -28,6 +34,8 @@ static int line_count(const char *file_path) {
     char buf[256];
     while (fgets(buf, sizeof(buf), f)) n++;
     fclose(f);
+
+    xSemaphoreGive(spi_flash_lock);
     return n;
 }
 
@@ -67,6 +75,12 @@ typedef struct {
 } writer_args_t;
 
 static void append_line(const char *path, const char *text) {
+    if (xSemaphoreTake(spi_flash_lock, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        ESP_LOGW("HEARTBEAT", "Could not take lock to read %s", path);
+        return;
+    }
+    ESP_LOGW(TAG, "Acquired lock.");
+
     FILE *f = fopen(path, "a");
     if (!f) {
         ESP_LOGE(TAG, "append open failed: %s", path);
@@ -76,6 +90,8 @@ static void append_line(const char *path, const char *text) {
     fprintf(f, "%lu, %s\n", ts, text ? text : "Test entry.");
     fflush(f);
     fclose(f);
+
+    xSemaphoreGive(spi_flash_lock);
 }
 
 static void writer_task(void *arg) {

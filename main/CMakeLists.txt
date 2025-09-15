@@ -7,5 +7,6 @@ idf_component_register(
         "sdcloud_final.c"   # your future main file
         "spiffs.c"
         "heartbeat.c"
+        "compression.c"
     INCLUDE_DIRS "."
 )
