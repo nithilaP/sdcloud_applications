@@ -2,5 +2,5 @@ sdcloud.set_expected_write_frequency(750)
 sdcloud.run_heartbeat
 
 sdcloud.set_compression_algorithm(delta)
-sdcloud.set_compression_interval(20000)
+sdcloud.set_compression_frequency(20000)
 sdcloud.run_compression
