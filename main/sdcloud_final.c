@@ -155,7 +155,7 @@ void app_main(void) {
             r = sd_to_spiffs_move("/sd", SD_INPUT_FILE,
                                   "/spiffs", SPIFFS_OUTPUT_FILE,
                                   true, false);
-            sdcard_deinit("/sd");
+            // sdcard_deinit("/sd");
             if (r != ESP_OK) ESP_LOGW("APP", "Seed failed: %s", esp_err_to_name(r));
         }
     // }

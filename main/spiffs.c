@@ -15,6 +15,8 @@
 #include "driver/spi_common.h"
 #include "driver/sdspi_host.h"
 #include "sdmmc_cmd.h"
+#include "driver/gpio.h"
+
 
 static const char *TAG = "fs_utils";
 
@@ -35,6 +37,28 @@ static const char *TAG = "fs_utils";
 #ifndef SDCARD_PIN_CS
 #define SDCARD_PIN_CS       5
 #endif
+
+// Safe pull-ups for SD lines (CS/MOSI/MISO), CLK as output w/ no pulls
+static void sdcard_configure_safe_gpio(void)
+{
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << SDCARD_PIN_CS) |
+                        (1ULL << SDCARD_PIN_MOSI) |
+                        (1ULL << SDCARD_PIN_MISO),
+        .mode = GPIO_MODE_INPUT_OUTPUT,
+        .pull_up_en = 1,
+        .pull_down_en = 0,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+    gpio_config(&io_conf);
+
+    gpio_set_direction(SDCARD_PIN_SCLK, GPIO_MODE_OUTPUT);
+    gpio_pullup_dis(SDCARD_PIN_SCLK);
+    gpio_pulldown_dis(SDCARD_PIN_SCLK);
+
+    // Idle CS high
+    gpio_set_level(SDCARD_PIN_CS, 1);
+}
 
 // ====== SPIFFS ======
 esp_err_t spiffs_init(const char *base_path, size_t max_files, bool format_if_mount_failed)
@@ -174,47 +198,72 @@ esp_err_t spiffs_write_file(const char *path, const void *data, size_t len, bool
 
 // ====== SD (SDSPI) ======
 static sdmmc_card_t *s_card = NULL;
+static char s_mount_point[16] = {0};  // remember the mount path (e.g., "/sd")
 
 esp_err_t sdcard_init(const char *base_path)
 {
     if (s_card) {
-        ESP_LOGW(TAG, "SD already mounted");
+        if (s_mount_point[0] != '\0' && strcmp(s_mount_point, base_path) != 0) {
+            ESP_LOGW(TAG, "SD already mounted at %s (requested %s)", s_mount_point, base_path);
+        } else {
+            ESP_LOGW(TAG, "SD already mounted");
+        }
         return ESP_OK;
     }
 
+    // Configure safe GPIO levels (pull-ups, CS high)
+    sdcard_configure_safe_gpio();
+
+    // FATFS mount config
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
         .max_files = 5,
         .allocation_unit_size = 16 * 1024
     };
 
+    // SDSPI host (VSPI by default)
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.slot = SDCARD_SPI_HOST;
 
+    // Start slow to avoid init timeouts; you can raise later
+    host.max_freq_khz = 400;  // 400 kHz
+
+    // SPI bus config
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = SDCARD_PIN_MOSI,
         .miso_io_num = SDCARD_PIN_MISO,
         .sclk_io_num = SDCARD_PIN_SCLK,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
-        .max_transfer_sz = 4000,
+        .max_transfer_sz = 4096,
         .flags = SPICOMMON_BUSFLAG_MASTER
     };
-    ESP_ERROR_CHECK(spi_bus_initialize(host.slot, &bus_cfg, SPI_DMA_CH_AUTO));
 
+    esp_err_t err = spi_bus_initialize(host.slot, &bus_cfg, SPI_DMA_CH_AUTO);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "spi_bus_initialize failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    // SDSPI device (chip select)
     sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
     slot_config.gpio_cs = SDCARD_PIN_CS;
     slot_config.host_id = host.slot;
 
+    // Mount
     esp_err_t ret = esp_vfs_fat_sdspi_mount(base_path, &host, &slot_config, &mount_config, &s_card);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to mount SD card FATFS at %s: %s", base_path, esp_err_to_name(ret));
-        spi_bus_free(host.slot);
+        spi_bus_free(host.slot);  // cleanup so we can retry later
         return ret;
     }
 
+    // Remember mount point for safe unmount
+    strncpy(s_mount_point, base_path, sizeof(s_mount_point) - 1);
+    s_mount_point[sizeof(s_mount_point) - 1] = '\0';
+
     sdmmc_card_print_info(stdout, s_card);
-    ESP_LOGI(TAG, "SD mounted at %s", base_path);
+    ESP_LOGI(TAG, "SD mounted at %s", s_mount_point);
     return ESP_OK;
 }
 
@@ -222,9 +271,10 @@ void sdcard_deinit(const char *base_path)
 {
     (void)base_path;
     if (s_card) {
-        esp_vfs_fat_sdcard_unmount(NULL, s_card);
+        const char *mp = (s_mount_point[0] != '\0') ? s_mount_point : "/sd";
+        esp_vfs_fat_sdcard_unmount(mp, s_card);  // must pass mount path (not NULL)
         s_card = NULL;
-        // Free the SPI bus used
+        s_mount_point[0] = '\0';
         spi_bus_free(SDCARD_SPI_HOST);
         ESP_LOGI(TAG, "SD unmounted");
     }
